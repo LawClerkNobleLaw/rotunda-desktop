@@ -1,0 +1,111 @@
+# Builds the Mac, Windows and Linux installers on GitHub's own machines.
+#
+# - Run by hand (Actions tab → "Build" → Run workflow): builds all three and
+#   keeps them on the run's page to try — nothing is published.
+# - Push a version tag (git tag v1.0.1 && git push origin v1.0.1): builds all
+#   three and publishes them as that release. The website's Download buttons
+#   point at releases/latest/download/<name>, so the file names below are fixed
+#   and must not change.
+name: Build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: --target universal-apple-darwin --bundles dmg
+          - os: windows-latest
+            args: --bundles nsis
+          - os: ubuntu-22.04
+            args: --bundles appimage,deb
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Linux libraries
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      # Until the Apple Developer secrets are added, the Mac app is built
+      # without Apple's stamp (people see "Open Anyway" once). An empty secret
+      # still counts as "set" to the bundler, so only real ones are passed on.
+      - name: Apple signing, once its secrets exist
+        if: matrix.os == 'macos-latest'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -n "${!v}" ]; then echo "$v=${!v}" >> "$GITHUB_ENV"; fi
+          done
+
+      - run: npm install
+
+      - name: Icons from app-icon.svg
+        run: npx tauri icon app-icon.svg
+
+      - name: Build
+        run: npx tauri build ${{ matrix.args }}
+
+      - name: Give the installers their fixed names
+        run: |
+          mkdir out
+          find src-tauri/target -path '*/bundle/*' -type f \( -name '*.dmg' -o -name '*-setup.exe' -o -name '*.AppImage' -o -name '*.deb' \) | while read -r f; do
+            case "$f" in
+              *.dmg) cp "$f" out/Rotunda-mac.dmg ;;
+              *-setup.exe) cp "$f" out/Rotunda-windows-setup.exe ;;
+              *.AppImage) cp "$f" out/Rotunda-linux.AppImage ;;
+              *.deb) cp "$f" out/Rotunda-linux.deb ;;
+            esac
+          done
+          ls -la out
+          [ -n "$(ls out)" ]
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.os }}
+          path: out/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Rotunda $GITHUB_REF_NAME" \
+            --notes "Download Rotunda for your computer: Rotunda-mac.dmg (Mac), Rotunda-windows-setup.exe (Windows), Rotunda-linux.AppImage or Rotunda-linux.deb (Linux)."
