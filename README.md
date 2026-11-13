@@ -15,9 +15,16 @@ GitHub Actions builds all three installers (`.github/workflows/build.yml`):
 
 - **Try a build:** Actions → Build → Run workflow. Installers are attached to the run.
 - **Release one:** bump `version` in `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`,
-  then push a tag: `git tag v1.0.1 && git push origin v1.0.1`.
+  run `cargo update --workspace` in `src-tauri/` so `Cargo.lock` has the new version too,
+  commit, then push a tag: `git tag v1.0.1 && git push origin v1.0.1`.
 
 Icons are generated at build time from `app-icon.svg`.
+
+The exact versions of everything the build uses are written down in `package-lock.json`
+and `src-tauri/Cargo.lock`, and the build uses only those (`npm ci`, `--locked`): it stops
+rather than quietly picking up something newer. To move to newer versions, do it on
+purpose and commit the result: `npm install --package-lock-only` for the Tauri command-line
+tool, and `cargo update` in `src-tauri/` for the app's Rust libraries.
 
 ## Mac signing
 
