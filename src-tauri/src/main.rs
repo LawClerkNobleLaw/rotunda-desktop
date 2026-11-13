@@ -19,15 +19,23 @@ use tauri::{Manager, Runtime, Url, Webview, WebviewUrl, WebviewWindowBuilder};
 // The dashboard sends anyone not signed in to the sign-in page first.
 const HOME: &str = "https://myrotunda.com/dashboard";
 
+// Only the real site over https: http://myrotunda.com could be tampered with on
+// the way, so it goes to the browser like any other outside link.
 fn is_rotunda(url: &Url) -> bool {
-    matches!(url.host_str(), Some("myrotunda.com") | Some("www.myrotunda.com"))
+    url.scheme() == "https" && matches!(url.host_str(), Some("myrotunda.com") | Some("www.myrotunda.com"))
+}
+
+// What may load in this window: the site itself, and the about:, blob: and
+// data: pages it makes (e.g. an export). Anything else (file:, ftp:, other
+// apps' schemes) is neither loaded here nor handed to the computer.
+fn stays_inside(url: &Url) -> bool {
+    is_rotunda(url) || matches!(url.scheme(), "about" | "blob" | "data")
 }
 
 fn opens_outside(url: &Url) -> bool {
     match url.scheme() {
         "http" | "https" => !is_rotunda(url),
         "mailto" | "tel" => true,
-        // about:, blob: and data: pages are the site's own (e.g. an export).
         _ => false,
     }
 }
@@ -90,13 +98,15 @@ fn main() {
                         open_outside(url);
                         return false;
                     }
-                    true
+                    stays_inside(url)
                 })
                 .on_new_window(move |url, _features| {
                     if opens_outside(&url) {
                         open_outside(&url);
-                    } else if let Some(main) = handle.get_webview_window("main") {
-                        let _ = main.navigate(url);
+                    } else if stays_inside(&url) {
+                        if let Some(main) = handle.get_webview_window("main") {
+                            let _ = main.navigate(url);
+                        }
                     }
                     NewWindowResponse::Deny
                 })
